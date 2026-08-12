@@ -1,0 +1,76 @@
+"""Server酱（Turbo）微信推送 — 支持多账号（多微信号）"""
+import os
+
+import requests
+
+API_URL = "https://sctapi.ftqq.com/{sendkey}.send"
+
+
+def get_keys():
+    """收集所有 SERVER_CHAN_KEY* 环境变量，逗号/竖线分隔，去重返回 key 列表"""
+    keys = []
+    for name in sorted(os.environ):
+        if name.startswith("SERVER_CHAN_KEY"):
+            for part in os.environ[name].split(","):
+                part = part.strip()
+                if part:
+                    keys.append(part)
+    seen, uniq = set(), []
+    for k in keys:
+        if k not in seen:
+            seen.add(k)
+            uniq.append(k)
+    return uniq
+
+
+def push(title, desp):
+    keys = get_keys()
+    if not keys:
+        print("[notifier] 未配置 SERVER_CHAN_KEY，跳过微信推送（仅本地记录）", flush=True)
+        return False
+    ok = True
+    for idx, key in enumerate(keys, 1):
+        try:
+            r = requests.post(API_URL.format(sendkey=key),
+                              data={"title": title, "desp": desp}, timeout=20)
+            ok = ok and r.ok
+            print(f"[notifier] 账号{idx} 推送 HTTP {r.status_code}: {r.text[:150]}", flush=True)
+        except Exception as e:
+            ok = False
+            print(f"[notifier] 账号{idx} 推送失败: {e}", flush=True)
+    return ok
+
+
+def stars(score):
+    score = max(0, min(10, int(score)))
+    return "⭐" * max(1, round(score / 2))
+
+
+def build_message(job):
+    lines = [
+        f"📢 【新岗位】{job.title}",
+        f"（匹配度：{job.score}分 {stars(job.score)}）",
+        f"📍 地点：{job.location or job.city or '详见公告'}（优先级：{job.region_label}）",
+        f"🏢 单位：{job.unit or '—'}",
+    ]
+    if job.status == "expiring":
+        lines.append(f"⏳ 报名截止：{job.deadline or '详见公告'}（⚠️ 仅剩 {max(1, job.days_left)} 天！）")
+    elif job.deadline:
+        lines.append(f"⏳ 报名截止：{job.deadline}（剩余 {max(0, job.days_left)} 天）")
+    else:
+        lines.append(f"⏳ 报名截止：详见公告（有效期约 {job.days_left} 天）")
+    lines.append(f"🔗 公告链接：{job.link}")
+    lines.append(f"✅ 匹配点：{job.match_points}")
+    lines.append(f"📝 备考建议：大概率考{job.exam_advice}，建议重点复习。")
+    lines.append(f"💰 薪酬参考（预估）：{job.salary_ref}")
+    return "\n".join(lines)
+
+
+def build_batch(jobs, pages_url=""):
+    parts = [build_message(j) for j in jobs]
+    body = "\n\n---\n\n".join(parts)
+    if pages_url:
+        body += f"\n\n📊 完整历史记录（含已过期岗位）：{pages_url}"
+    else:
+        body += "\n\n📊 完整历史记录：请在 GitHub Actions 运行结果的 Artifacts 中下载 history.html 查看（或配置 PAGES_URL 变量后开启 GitHub Pages）"
+    return body
