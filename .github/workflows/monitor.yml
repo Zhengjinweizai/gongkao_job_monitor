@@ -1,0 +1,59 @@
+name: gongkao-job-monitor
+
+on:
+  schedule:
+    - cron: "0 0,12 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          python -m playwright install chromium || true
+
+      - name: Run monitor
+        env:
+          SERVER_CHAN_KEY: ${{ secrets.SERVER_CHAN_KEY }}
+          SERVER_CHAN_KEY_2: ${{ secrets.SERVER_CHAN_KEY_2 }}
+          PAGES_URL: ${{ vars.PAGES_URL }}
+        run: python main.py
+
+      - name: Commit history back to repo
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add history.json
+          git diff --cached --quiet || git commit -m "chore: update history.json [skip ci]"
+          git push
+
+      - name: Upload history artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: history-page
+          path: history.html
+          if-no-files-found: warn
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./
+          publish_branch: gh-pages
+          exclude_assets: '.github,.git,.gitignore,requirements.txt,config.py,parsers.py,filters.py,storage.py,notifier.py,main.py,generate_html.py'
+          force_orphan: true
