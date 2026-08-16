@@ -1,12 +1,26 @@
 name: gongkao-job-monitor
 
+on:
+  schedule:
+    - cron: "0 0,12 * * *"
+  workflow_dispatch:
+
 permissions:
   contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
 
 jobs:
   monitor:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -27,6 +41,8 @@ jobs:
           SERVER_CHAN_KEY: ${{ secrets.SERVER_CHAN_KEY }}
           SERVER_CHAN_KEY_2: ${{ secrets.SERVER_CHAN_KEY_2 }}
           PAGES_URL: ${{ vars.PAGES_URL }}
+          FETCH_PROXY: ${{ vars.FETCH_PROXY }}
+          READER_PROXY: ${{ vars.READER_PROXY }}
         run: python main.py
 
       - name: Commit history back to repo
@@ -41,14 +57,18 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: history-page
-          path: history.html
+          path: site/history.html
           if-no-files-found: warn
 
-      - name: Deploy to GitHub Pages
-        uses: peaceiris/actions-gh-pages@v3
+      - name: Configure Pages
+        id: pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./
-          publish_branch: gh-pages
-          exclude_assets: '.github,.git,.gitignore,requirements.txt,config.py,parsers.py,filters.py,storage.py,notifier.py,main.py,generate_html.py'
-          force_orphan: true
+          path: site
+
+      - name: Deploy Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
