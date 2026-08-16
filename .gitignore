@@ -1,0 +1,8 @@
+# 生成物（不提交仓库，由 GitHub Pages 部署使用）
+site/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/

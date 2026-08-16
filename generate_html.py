@@ -1,6 +1,7 @@
 """生成历史记录 HTML：① 每日新增 + ② 历史累计（行内展开详情：匹配说明/薪资/职业要求/政审/备考）"""
 import datetime
 import html as html_mod
+import os
 
 from config import HTML_FILE, PAGES_URL, GRADUATE_DATE
 
@@ -249,6 +250,7 @@ function tg(btn){{
 </body>
 </html>
 """
+    os.makedirs(os.path.dirname(HTML_FILE), exist_ok=True)
     with open(HTML_FILE, "w", encoding="utf-8") as f:
         f.write(html_doc)
     print(f"[generate_html] 已生成 {HTML_FILE}（今日新增 {len(daily)}，累计 {len(jobs)}）", flush=True)

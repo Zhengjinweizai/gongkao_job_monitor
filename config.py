@@ -53,4 +53,4 @@ PAGES_URL = os.getenv("PAGES_URL", "")
 
 # ============ 文件路径 ============
 HISTORY_FILE = "history.json"
-HTML_FILE = "history.html"
+HTML_FILE = "site/history.html"     # 输出到 site/ 子目录，供 GitHub Pages 官方部署上传
