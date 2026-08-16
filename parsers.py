@@ -1,6 +1,8 @@
 """全部招聘公告解析器（合一文件）"""
+import os
 import random
 import re
+import socket
 import time
 import datetime
 from dataclasses import dataclass, field, asdict
@@ -10,6 +12,22 @@ import requests
 from bs4 import BeautifulSoup
 
 from config import SOURCES, PARSE_ATTACHMENT
+
+
+def force_ipv4():
+    """优先 IPv4 解析，规避 GitHub runner 无 IPv6 出口导致的 Network unreachable"""
+    try:
+        import urllib3.util.connection as _uc
+        _uc.HAS_IPV6 = False
+    except Exception:
+        pass
+    try:
+        socket.setdefaulttimeout(30)
+    except Exception:
+        pass
+
+
+force_ipv4()
 
 
 @dataclass
@@ -74,18 +92,133 @@ def polite_delay():
     time.sleep(random.uniform(1.0, 3.0))
 
 
-def http_get(url, timeout=20, encoding=None, headers=None):
-    h = headers or {
-        "User-Agent": random.choice(USER_AGENTS),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "zh-CN,zh;q=0.9",
-        "Connection": "keep-alive",
-    }
-    r = requests.get(url, headers=h, timeout=timeout)
+# ---------- 统一健壮 HTTP 层（海外/代理环境下最大兼容） ----------
+# 本地坏代理或 GitHub 海外 runner 导致直连失败时：
+#   连接错误自动重试；反爬 4xx 不重试，直接走 Reader 兜底抓取。
+# FETCH_PROXY: 如需显式代理可设置（默认不用代理，忽略系统代理）
+# READER_PROXY: 直连失败时的第三方抓取兜底，默认 r.jina.ai（实测可绕过国内 WAF 412）
+FETCH_PROXY = os.getenv("FETCH_PROXY", "").strip()
+READER_PROXY = os.getenv("READER_PROXY", "https://r.jina.ai/").strip()
+
+
+def _new_session(ua=True):
+    s = requests.Session()
+    s.trust_env = False
+    if ua:
+        s.headers.update(browser_headers())
+    if FETCH_PROXY:
+        s.proxies.update({"http": FETCH_PROXY, "https": FETCH_PROXY})
+    return s
+
+
+_session = None
+
+
+def get_session():
+    global _session
+    if _session is None:
+        _session = _new_session()
+    return _session
+
+
+def _reader_url(url):
+    if "{url}" in READER_PROXY:
+        return READER_PROXY.format(url=url)
+    return READER_PROXY + url
+
+
+def _reader_fetch(url, timeout, encoding):
+    """直连失败后经第三方 Reader 兜底抓取（返回 markdown 文本）"""
+    if not READER_PROXY:
+        return None
+    try:
+        s = _new_session(ua=False)
+        r = s.get(_reader_url(url), timeout=timeout + 20)
+        if r.status_code == 200 and len(r.text) > 300:
+            r.is_markdown = True
+            if encoding:
+                r.encoding = encoding
+            return r
+        log(f"[http] reader 兜底异常状态 {r.status_code}: {url}")
+    except Exception as e:
+        log(f"[http] reader 兜底失败 {url}: {e}")
+    return None
+
+
+def _fetch_once(sess, method, url, timeout, headers=None, **kw):
+    r = sess.request(method, url, headers=headers, timeout=timeout, **kw)
+    if r.status_code in (403, 412):
+        raise requests.HTTPError(f"{r.status_code} WAF/anti-bot for {url}", response=r)
     r.raise_for_status()
-    if encoding:
-        r.encoding = encoding
     return r
+
+
+def _request_retry(method, url, timeout, headers=None, encoding=None,
+                   reader_fallback=True, retries=3, **kw):
+    sess = get_session()
+    last = None
+    for attempt in range(retries):
+        try:
+            r = _fetch_once(sess, method, url, timeout, headers=headers, **kw)
+            if encoding:
+                r.encoding = encoding
+            return r
+        except requests.HTTPError as e:
+            code = e.response.status_code if e.response is not None else 0
+            if code in (403, 412):
+                last = e
+                break  # 反爬 4xx 重试无意义，直接跳出循环交给 reader 兜底
+            if code < 500:
+                raise  # 404 等确定性错误不重试
+            last = e
+        except Exception as e:
+            last = e
+        time.sleep(1.2 ** attempt + random.uniform(0, 0.5))
+    if reader_fallback:
+        rr = _reader_fetch(url, timeout, encoding)
+        if rr is not None:
+            log(f"[http] 直连失败，已用 reader 兜底 {url}")
+            return rr
+    if last is None:
+        raise requests.ConnectionError(f"direct fetch failed: {url}")
+    raise last
+
+
+def http_get(url, timeout=25, encoding=None, headers=None, reader_fallback=True):
+    return _request_retry("GET", url, timeout, headers=headers,
+                          encoding=encoding, reader_fallback=reader_fallback)
+
+
+def http_post(url, data=None, timeout=25, headers=None):
+    return _request_retry("POST", url, timeout, headers=headers,
+                          data=data, reader_fallback=False)
+
+
+def http_download(url, timeout=40):
+    r = _request_retry("GET", url, timeout, reader_fallback=False)
+    return r.content
+
+
+def browser_headers(referer=""):
+    h = {
+        "User-Agent": random.choice(USER_AGENTS),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "Cache-Control": "max-age=0",
+        "sec-ch-ua": '"Chromium";v="126", "Google Chrome";v="126", "Not-A.Brand";v="99"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-User": "?1",
+    }
+    if referer:
+        h["Referer"] = referer
+    return h
 
 
 ANNO_KEYWORDS = ["招聘", "招录", "考录", "选调", "遴选", "聘用",
@@ -100,7 +233,29 @@ NEGATIVE_KEYWORDS = ["大赛", "吉祥物", "征集", "评选", "表彰", "奖�
                      "面试通知", "进入体检", "考察公告", "考察通知", "递补"]
 
 
+def extract_announcements_md(md, base_url, keep_words=None, limit=60):
+    """解析 r.jina.ai 等 Reader 返回的 markdown 链接（[标题](url)）"""
+    keep_words = keep_words or ANNO_KEYWORDS
+    seen, items = set(), []
+    for m in re.finditer(r"\[([^\]\n]{8,120})\]\((https?://[^)\s]+)\)", md):
+        text = m.group(1).strip()
+        link = m.group(2).strip()
+        if any(k in text for k in NEGATIVE_KEYWORDS):
+            continue
+        if not any(k in text for k in keep_words):
+            continue
+        if link in seen:
+            continue
+        seen.add(link)
+        items.append({"title": text, "link": link})
+        if len(items) >= limit:
+            break
+    return items
+
+
 def extract_announcements(html, base_url, keep_words=None, limit=60):
+    if "<a " not in html and "](" in html:
+        return extract_announcements_md(html, base_url, keep_words, limit)
     keep_words = keep_words or ANNO_KEYWORDS
     soup = BeautifulSoup(html, "lxml")
     seen, items = set(), []
@@ -161,17 +316,29 @@ def _fetch_guokao():
 
 
 # ============ 2. 甘肃组工网（省考/选调） ============
+# 注：tzgg/ rsks/ sydw/ 栏目路径已 404，仅保留有效入口
+GSZG_URLS = [
+    "http://www.gszg.gov.cn",
+    "http://www.gszg.gov.cn/gwy/",
+]
+
+
 def _fetch_gszg():
-    url = SOURCES["gszg"]["url"]
     jobs = []
-    try:
-        html = http_get(url).text
-        for it in extract_announcements(html, url):
-            jobs.append(Job(title=it["title"], unit="甘肃组工网", link=it["link"],
-                            source="甘肃组工网", publish_date=extract_date(it["title"])))
-        polite_delay()
-    except Exception as e:
-        log(f"[甘肃组工网] 抓取失败: {e}")
+    seen = set()
+    for url in GSZG_URLS:
+        try:
+            html = http_get(url).text
+            for it in extract_announcements(html, url):
+                link = it["link"]
+                if link in seen:
+                    continue
+                seen.add(link)
+                jobs.append(Job(title=it["title"], unit="甘肃组工网", link=link,
+                                source="甘肃组工网", publish_date=extract_date(it["title"])))
+            polite_delay()
+        except Exception as e:
+            log(f"[甘肃组工网] {url} 抓取失败: {e}")
     return jobs
 
 
@@ -258,11 +425,9 @@ MOHRSS_API = "https://job.mohrss.gov.cn/cjobs/institution/getinstitutionbyajax"
 def _fetch_mohrss():
     jobs = []
     try:
-        r = requests.post(MOHRSS_API, headers={
-            "User-Agent": random.choice(USER_AGENTS),
-            "X-Requested-With": "XMLHttpRequest",
-            "Referer": "https://job.mohrss.gov.cn/",
-        }, timeout=20)
+        h = browser_headers(referer="https://job.mohrss.gov.cn/")
+        h["X-Requested-With"] = "XMLHttpRequest"
+        r = http_post(MOHRSS_API, data=None, timeout=20, headers=h)
         data = r.json()
         for item in data:
             title = item.get("title") or ""
@@ -282,17 +447,10 @@ def _fetch_mohrss():
         log(f"[中国公共招聘网] JSON 接口失败: {e}")
     try:
         url = "https://job.mohrss.gov.cn/cjobs/institution/listInstitution?pageNo=1"
-        html = http_get(url).text
-        soup = BeautifulSoup(html, "lxml")
-        for a in soup.find_all("a", href=True):
-            text = (a.get_text() or "").strip()
-            href = a.get("href") or ""
-            if len(text) < 8 or "javascript" in href:
-                continue
-            if not any(k in text for k in ("招聘", "招录", "聘用")):
-                continue
-            jobs.append(Job(title=text, unit="", link=urljoin(url, href),
-                            source="中国公共招聘网", publish_date=extract_date(text)))
+        r = http_get(url, timeout=20)
+        for it in extract_announcements(r.text, url, limit=60):
+            jobs.append(Job(title=it["title"], unit="", link=it["link"],
+                            source="中国公共招聘网", publish_date=extract_date(it["title"])))
         polite_delay()
     except Exception as e:
         log(f"[中国公共招聘网] 列表页兜底失败: {e}")
@@ -346,6 +504,13 @@ def _fetch_shiyebian():
     for url in urls:
         try:
             r = http_get(url, encoding="gbk")
+            if getattr(r, "is_markdown", False):
+                for it in extract_announcements(r.text, url, limit=50):
+                    title = it["title"]
+                    jobs.append(Job(title=title, unit="", link=it["link"],
+                                    source="事业单位招聘网",
+                                    publish_date=extract_date(title)))
+                continue
             soup = BeautifulSoup(r.text, "lxml")
             ul = soup.select_one("ul.list-index")
             if not ul:
@@ -393,10 +558,16 @@ GAOXIAOJOB_KEEP = ["招聘", "招录", "选调", "人才引进", "引进", "招�
 def _fetch_gaoxiaojob():
     jobs = []
     seen = set()
+    sess = get_session()
+    try:
+        sess.get("https://www.gaoxiaojob.com/", timeout=20)   # 预热 Cookie
+        polite_delay()
+    except Exception as e:
+        log(f"[高校人才网] 首页预热失败: {e}")
     for url, label in GAOXIAOJOB_PAGES:
         try:
-            html = http_get(url).text
-            for it in extract_announcements(html, url, keep_words=GAOXIAOJOB_KEEP, limit=50):
+            r = http_get(url, headers=browser_headers(referer="https://www.gaoxiaojob.com/"))
+            for it in extract_announcements(r.text, url, keep_words=GAOXIAOJOB_KEEP, limit=50):
                 link = it["link"]
                 if "/announcement/detail/" not in link:
                     continue
@@ -535,10 +706,7 @@ def fetch_detail(job):
 
 # ============ 附件解析（Excel / PDF） ============
 def _download_binary(url):
-    h = {"User-Agent": random.choice(USER_AGENTS)}
-    r = requests.get(url, headers=h, timeout=30)
-    r.raise_for_status()
-    return r.content
+    return http_download(url, timeout=40)
 
 
 def _pdf_text(url):

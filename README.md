@@ -1,4 +1,4 @@
-# gongkao-job-monitor
+# 考公推送
 
 每日自动抓取全国公务员/事业单位招聘公告，按"生物医学硕士 · 2027届应届 · 天水生源"身份智能匹配打分，微信（Server酱）推送重点岗位，并自动生成可视化历史记录页（可部署到 GitHub Pages）。
 
@@ -11,21 +11,22 @@
 - **微信推送**：只推送当天新增且匹配度 ≥ 2 的岗位；无新增则推送"静默消息"；**支持双微信号**（两个 Server酱 账号各推一次）
 - **历史可视化**：自动生成 `history.html`（蓝白风格、移动端适配），分为 **① 每日新增（可显示"今日无新增"）** 和 **② 历史累计岗位** 两部分，推送 GitHub Pages + Actions Artifact
 - **去重**：以 `单位+岗位+发布日期+链接` 的 MD5 为唯一标识存入 `history.json`，跨天运行不重复推送
-- **健壮性**：单源失败自动跳过；随机 UA + 1~3 秒随机延时；Excel/PDF 附件尝试自动解析
+- **健壮性**：单源失败自动跳过；随机 UA + 1~3 秒随机延时；**统一 HTTP 层**（忽略坏代理、连接错误自动重试）；**Reader 兜底**（直连被 WAF/海外 IP 拦截时自动经 `r.jina.ai` 抓取）；Excel/PDF 附件尝试自动解析
 
 ## 目录结构
 
 ```
-gongkao-job-monitor/
+考公推送/
 ├── .github/workflows/monitor.yml   # 每日 8:00 / 20:00（北京时间）+ 手动触发
 ├── main.py                         # 主流程
 ├── config.py                       # 权重、关键词、数据源、时效/薪资/备考参数
-├── parsers.py                      # 全部站点解析器（合一）+ 附件解析
+├── parsers.py                      # 全部站点解析器（合一）+ 附件解析 + 统一 HTTP 层
 ├── filters.py                      # 地域加权 + 专业打分 + 时效判断 + 备考/薪酬生成
 ├── notifier.py                     # Server酱（Turbo）推送
 ├── storage.py                      # history.json 读写与去重
-├── generate_html.py                # 生成 history.html
+├── generate_html.py                # 生成 site/history.html（每日新增 + 历史累计 + 详情）
 ├── requirements.txt
+├── .gitignore
 └── README.md
 ```
 
@@ -63,6 +64,8 @@ git push -u origin main
 | **Secret** | `SERVER_CHAN_KEY` | 微信① 的 Server酱 Turbo SendKey（`sct.ftqq.com` 获取） |
 | **Secret** | `SERVER_CHAN_KEY_2` | 微信② 的 SendKey（可选，两个微信号各绑一个 Server酱 账号） |
 | **Variable** | `PAGES_URL` | 可选，GitHub Pages 地址，如 `https://<用户名>.github.io/gongkao-job-monitor/history.html` |
+| **Variable** | `FETCH_PROXY` | 可选，HTTP(S) 代理地址（如 `http://user:pass@host:port`），代码只在你显式设置时使用代理 |
+| **Variable** | `READER_PROXY` | 可选，直连失败时的兜底抓取服务，默认 `https://r.jina.ai/`（实测可绕过国内站点 WAF） |
 
 > `GITHUB_TOKEN` 由 GitHub 自动提供，无需手动配置。
 
@@ -71,12 +74,13 @@ git push -u origin main
 2. 用微信② **重新注册一个 Server酱 账号**（`sct.ftqq.com`）→ 复制 SendKey → 填入 `SERVER_CHAN_KEY_2`；
 3. 两个微信会各收到一次相同内容的推送。若日后还想加第三个号，继续新增 `SERVER_CHAN_KEY_3` Secret 即可（脚本自动识别所有 `SERVER_CHAN_KEY*`）。
 
-### 3. 开启 GitHub Pages
+### 3. 开启 GitHub Pages（官方 Actions 部署方式）
 
 1. 仓库 `Settings → Pages`
-2. Build and deployment → Source 选择 **Deploy from a branch**
-3. Branch 选 **`gh-pages`** → 保存
-4. 首次 Actions 运行成功后，访问 `https://<用户名>.github.io/gongkao-job-monitor/history.html`
+2. Build and deployment → Source 选择 **`GitHub Actions`**（不是 "Deploy from a branch"）→ 保存
+3. 触发一次 Actions（`Actions → Run workflow`），首次运行成功后：
+   - 页面 URL 为 `https://<用户名>.github.io/gongkao-job-monitor/history.html`
+   - 例如：`https://Zhengjinweizai.github.io/gongkao_job_monitor/history.html`
 
 ### 4. 手动触发一次
 
@@ -109,3 +113,26 @@ python main.py
 ## 免责声明
 
 本工具仅作个人备考信息聚合，抓取频率低（每日 2 次），请遵守目标网站的 robots 与访问规范。所有岗位信息以各官方发布公告为准，本工具不构成报考建议。
+
+## 海外部署网络方案（GitHub Actions）
+
+GitHub Actions 运行器位于美国，部分国内站点会因海外 IP / WAF 反爬导致抓取失败。本项目通过三层机制解决：
+
+1. **忽略系统/环境代理**：HTTP 层统一 `trust_env=False`，不会因本地/共享坏代理产生 `ProxyError`；只有显式设置 `FETCH_PROXY` 时才走代理。
+2. **自动重试**：连接错误、超时、5xx 自动指数退避重试（最多 3 次）；4xx 反爬（403/412）不浪费时间重试，直接进入兜底。
+3. **Reader 兜底**：直连被 WAF 或海外 IP 拦截时，自动改经 `READER_PROXY`（默认 `https://r.jina.ai/`，r.jina.ai 用自己的服务器集群抓取、自带浏览器渲染）获取公告列表/详情，并解析其 markdown 链接。
+
+实测各源表现：
+
+| 数据源 | 海外/反爬表现 | 处理 |
+|---|---|---|
+| 事业单位招聘网 | 稳定 | 直接抓取（GBK） |
+| 高校人才网 | Cookie 预热 + 偶尔超时 | 自动重试 + reader 兜底 |
+| 甘肃组工网 | 栏目 `/tzgg /rsks /sydw` 已 404（已移除） | 仅用首页 `/gwy`，reader 兜底 |
+| 甘肃省人社厅 | WAF 反爬 412（直连必败） | **reader 兜底正常绕过**（实测可取到公告） |
+| 国家公务员局 | 海外稳定 | 直接抓取 |
+| 陕西省人社厅 | 少数时段无数据 | 直接抓取 |
+| 西安人事考试网 | TLS 握手失败，jina 亦 422 | 视为弱源，JS 渲染兜底 |
+| 中国公共招聘网 | JSON/TLS 不通，jina 422 | 视为弱源，保留 JSON→列表 双兜底 |
+
+> 若某源在贵网络始终不可用，可在 GitHub Actions 设置 `FETCH_PROXY`（国内代理）替它直连。日常信息以聚合站（事业单位招聘网、高校人才网）为主，官方 gov 站为辅。
