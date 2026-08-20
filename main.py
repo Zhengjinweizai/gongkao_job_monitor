@@ -12,6 +12,23 @@ import generate_html
 MAX_DETAIL_FETCH = 30   # 每次运行最多为高价值岗位拉取详情条数
 
 
+def resolve_pages_url():
+    """确定历史记录页地址：
+    1) PAGES_URL 若误填了 deployments 部署记录地址则忽略；
+    2) 有值则直接使用；
+    3) 为空则用 GitHub Actions 的 GITHUB_REPOSITORY 自动构造站点地址。"""
+    url = os.getenv("PAGES_URL", "").strip()
+    if url and "deployments/github-pages" in url:
+        url = ""
+    if url:
+        return url
+    repo = os.getenv("GITHUB_REPOSITORY", "").strip()
+    if "/" in repo:
+        owner, name = repo.split("/", 1)
+        return f"https://{owner}.github.io/{name}/history.html"
+    return ""
+
+
 def purge_expired(history, today):
     """按宽限期删除已过期岗位，并刷新存活岗位的 status/days_left"""
     keep = []
@@ -84,7 +101,7 @@ def main():
 
     storage.save_history(history)
 
-    pages_url = os.getenv("PAGES_URL", "").strip()
+    pages_url = resolve_pages_url()
 
     generate_html.render(history, today)
 
@@ -96,6 +113,8 @@ def main():
             notifier.push(title, desp)
         else:
             notifier.push("📭 今日无新增匹配岗位",
+                          f"今日共抓取 {len(raw_jobs)} 条公告，未发现新的高匹配岗位。\n\n"
+                          f"📊 完整历史记录：{pages_url}" if pages_url else
                           f"今日共抓取 {len(raw_jobs)} 条公告，未发现新的高匹配岗位。\n\n历史完整记录见 history.html。")
     except Exception as e:
         print(f"[main] 推送异常（不影响 HTML 生成）: {e}", flush=True)
