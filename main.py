@@ -3,7 +3,7 @@ import datetime
 import os
 
 from parsers import run_all, try_extract_attachment, fetch_detail
-from filters import enrich, check_validity
+from filters import enrich, check_validity, infer_types
 from config import PUSH_MIN_SCORE, GRADUATE_DATE, REGION_HIGH, EXPIRE_PURGE_DAYS
 import storage
 import notifier
@@ -34,6 +34,10 @@ def main():
     today = datetime.date.today().isoformat()
     history = storage.load_history()
     history = purge_expired(history, today)
+    for j in history["jobs"]:   # 旧数据重算档位，保证公务员/事业编置顶
+        t, ty = infer_types(j.get("title", ""), j.get("unit", ""), j.get("source", ""))
+        j["tier"] = t
+        j["job_type"] = ty
     known = storage.known_ids(history)
     print(f"[main] 开始监控，历史已知岗位 {len(known)} 个，毕业时间 {GRADUATE_DATE}", flush=True)
 
@@ -81,15 +85,20 @@ def main():
     storage.save_history(history)
 
     pages_url = os.getenv("PAGES_URL", "").strip()
-    if new_to_push:
-        title = f"📢 今日新增匹配岗位 {len(new_to_push)} 个（最高 {max(j.score for j in new_to_push)}分）"
-        desp = notifier.build_batch(new_to_push, pages_url)
-        notifier.push(title, desp)
-    else:
-        notifier.push("📭 今日无新增匹配岗位",
-                      f"今日共抓取 {len(raw_jobs)} 条公告，未发现新的高匹配岗位。\n\n历史完整记录见 history.html。")
 
     generate_html.render(history, today)
+
+    try:
+        if new_to_push:
+            new_to_push.sort(key=lambda x: (x.tier, -x.score, x.days_left))
+            title = f"📢 今日新增匹配岗位 {len(new_to_push)} 个（最高 {max(j.score for j in new_to_push)}分）"
+            desp = notifier.build_batch(new_to_push, pages_url)
+            notifier.push(title, desp)
+        else:
+            notifier.push("📭 今日无新增匹配岗位",
+                          f"今日共抓取 {len(raw_jobs)} 条公告，未发现新的高匹配岗位。\n\n历史完整记录见 history.html。")
+    except Exception as e:
+        print(f"[main] 推送异常（不影响 HTML 生成）: {e}", flush=True)
     print("[main] 全部完成", flush=True)
 
 

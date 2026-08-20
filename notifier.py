@@ -46,12 +46,20 @@ def stars(score):
     return "⭐" * max(1, round(score / 2))
 
 
+TIER_LABELS = {1: "🟦 公务员", 2: "🟩 事业编制", 3: "⚪ 其他"}
+
+
+def tier_of(job):
+    return int(getattr(job, "tier", 3) or 3)
+
+
 def build_message(job):
     lines = [
         f"📢 【新岗位】{job.title}",
         f"（匹配度：{job.score}分 {stars(job.score)}）",
         f"📍 地点：{job.location or job.city or '详见公告'}（优先级：{job.region_label}）",
         f"🏢 单位：{job.unit or '—'}",
+        f"🏷️ 类型：{job.job_type or '其他'}",
     ]
     if job.status == "expiring":
         lines.append(f"⏳ 报名截止：{job.deadline or '详见公告'}（⚠️ 仅剩 {max(1, job.days_left)} 天！）")
@@ -67,8 +75,16 @@ def build_message(job):
 
 
 def build_batch(jobs, pages_url=""):
-    parts = [build_message(j) for j in jobs]
-    body = "\n\n---\n\n".join(parts)
+    jobs = sorted(jobs, key=lambda j: (tier_of(j), -int(j.score or 0), int(j.days_left or 999)))
+    parts = []
+    cur = None
+    for j in jobs:
+        t = tier_of(j)
+        if t != cur:
+            cur = t
+            parts.append(f"《{TIER_LABELS.get(t, '其他')}》")
+        parts.append(build_message(j))
+    body = "\n\n".join(parts)
     if pages_url:
         body += f"\n\n📊 完整历史记录（含已过期岗位）：{pages_url}"
     else:

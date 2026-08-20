@@ -62,6 +62,8 @@ class Job:
     attachments: list = field(default_factory=list)
     match_explanation: list = field(default_factory=list)
     suggestion: str = ""
+    job_type: str = ""
+    tier: int = 3
 
     def unique_id(self):
         raw = f"{self.unit}|{self.title}|{self.publish_date}|{self.link}"

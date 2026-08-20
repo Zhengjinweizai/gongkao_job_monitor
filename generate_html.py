@@ -15,6 +15,11 @@ def esc(s):
     return html_mod.escape(str(s or ""))
 
 
+TIER_BADGE = {1: '<span class="t-tier t1">公务员</span>',
+              2: '<span class="t-tier t2">事业编</span>',
+              3: '<span class="t-tier t3">其他</span>'}
+
+
 def status_badge(status):
     if status == "expired":
         return '<span class="badge b-red">已过期</span>'
@@ -25,7 +30,8 @@ def status_badge(status):
 
 def sort_key(job):
     rank = {"expiring": 0, "active": 1, "expired": 2}
-    return (rank.get(job.get("status"), 1),
+    return (int(job.get("tier", 3)),
+            rank.get(job.get("status"), 1),
             -int(job.get("score", 0)),
             int(job.get("days_left", 999)))
 
@@ -87,8 +93,9 @@ def render_row(j):
     else:
         days = f"{days} 天"
     summary = f"""\
-      <tr class="s-row {esc(j.get('status', 'active'))}">
+      <tr class="s-row t-tier-{esc(j.get('tier', 3))} {esc(j.get('status', 'active'))}">
         <td class="score"><div class="sc-num">{esc(j.get('score'))}</div><div class="sc-star">{stars(j.get('score', 0))}</div><div class="sc-sug">{esc(j.get('suggestion'))}</div></td>
+        <td>{TIER_BADGE.get(int(j.get('tier', 3)), TIER_BADGE[3])}</td>
         <td class="t-title"><a href="{esc(j.get('link'))}" target="_blank" rel="noopener">{esc(j.get('title'))}</a></td>
         <td>{esc(j.get('unit') or '—')}</td>
         <td>{esc(j.get('location') or (j.get('city') or '—'))}<br><span class="tag-p">{esc(j.get('region_label'))}</span></td>
@@ -100,7 +107,7 @@ def render_row(j):
       </tr>"""
     detail = f"""\
       <tr class="d-row">
-        <td colspan="9"><div class="d-panel">{render_detail(j)}</div></td>
+        <td colspan="10"><div class="d-panel">{render_detail(j)}</div></td>
       </tr>"""
     return summary + detail
 
@@ -108,6 +115,8 @@ def render_row(j):
 def render(history, today):
     jobs = history["jobs"]
     active = sum(1 for j in jobs if j.get("status") != "expired")
+    t1 = sum(1 for j in jobs if int(j.get("tier", 3)) == 1)
+    t2 = sum(1 for j in jobs if int(j.get("tier", 3)) == 2)
 
     daily = sorted([j for j in jobs if j.get("fetched_at") == today], key=sort_key)
     cumulative = sorted(jobs, key=sort_key)
@@ -116,7 +125,7 @@ def render(history, today):
         daily_rows = "".join(render_row(j) for j in daily)
         daily_note = f"今日（{esc(today)}）新发现匹配岗位 <b>{len(daily)}</b> 个"
     else:
-        daily_rows = '<tr><td colspan="9" class="empty">今日无新增匹配岗位</td></tr>'
+        daily_rows = '<tr><td colspan="10" class="empty">今日无新增匹配岗位</td></tr>'
         daily_note = f"今日（{esc(today)}）暂未发现新的匹配岗位"
 
     cumulative_rows = "".join(render_row(j) for j in cumulative)
@@ -167,6 +176,12 @@ def render(history, today):
   .b-gold{{background:#fdf6e3;color:#b8860b;}}
   .b-red{{background:#fdeceb;color:#c0392b;}}
   .tag-p{{display:inline-block;font-size:.72rem;color:var(--blue-600);background:var(--blue-100);padding:1px 8px;border-radius:6px;margin-top:3px;}}
+  .t-tier{{display:inline-block;padding:2px 9px;border-radius:999px;font-size:.74rem;font-weight:700;white-space:nowrap;}}
+  .t1{{background:#dceeff;color:#0a5cb8;}}
+  .t2{{background:#e6f7ee;color:#178a4d;}}
+  .t3{{background:#f0f0f4;color:#6b7686;}}
+  tbody tr.t-tier-1{{background:#f0f8ff !important;}}
+  tbody tr.t-tier-1:hover{{background:#e3f1ff !important;}}
   .days{{font-size:.75rem;color:var(--muted);}}
   .c-detail{{text-align:center;white-space:nowrap;}}
   .tgl{{border:1px solid var(--blue-500);color:var(--blue-600);background:#fff;border-radius:8px;padding:5px 12px;font-size:.8rem;cursor:pointer;transition:.2s;}}
@@ -191,6 +206,8 @@ def render(history, today):
   <div class="stats">
     <div class="stat">🆕 今日新增：<b>{len(daily)}</b> 个</div>
     <div class="stat">📋 历史累计：<b>{len(jobs)}</b> 个</div>
+    <div class="stat">🟦 公务员：<b>{t1}</b> 个</div>
+    <div class="stat">🟩 事业编：<b>{t2}</b> 个</div>
     <div class="stat">✅ 当前可报：<b>{active}</b> 个</div>
     <div class="stat">🗓️ 更新：{esc(today_disp)}</div>
   </div>
@@ -206,7 +223,7 @@ def render(history, today):
     <div class="tbl-wrap">
       <table>
         <thead>
-          <tr><th>匹配度</th><th>岗位名称</th><th>招录单位</th><th>工作地点</th><th>学历要求</th><th>专业要求</th><th>报名截止</th><th>状态</th><th></th></tr>
+          <tr><th>匹配度</th><th>类型</th><th>岗位名称</th><th>招录单位</th><th>工作地点</th><th>学历要求</th><th>专业要求</th><th>报名截止</th><th>状态</th><th></th></tr>
         </thead>
         <tbody>
 {daily_rows}
@@ -224,7 +241,7 @@ def render(history, today):
     <div class="tbl-wrap">
       <table>
         <thead>
-          <tr><th>匹配度</th><th>岗位名称</th><th>招录单位</th><th>工作地点</th><th>学历要求</th><th>专业要求</th><th>报名截止</th><th>状态</th><th></th></tr>
+          <tr><th>匹配度</th><th>类型</th><th>岗位名称</th><th>招录单位</th><th>工作地点</th><th>学历要求</th><th>专业要求</th><th>报名截止</th><th>状态</th><th></th></tr>
         </thead>
         <tbody>
 {cumulative_rows}
@@ -253,4 +270,12 @@ function tg(btn){{
     os.makedirs(os.path.dirname(HTML_FILE), exist_ok=True)
     with open(HTML_FILE, "w", encoding="utf-8") as f:
         f.write(html_doc)
-    print(f"[generate_html] 已生成 {HTML_FILE}（今日新增 {len(daily)}，累计 {len(jobs)}）", flush=True)
+    index_path = os.path.join(os.path.dirname(HTML_FILE), "index.html")
+    with open(index_path, "w", encoding="utf-8") as f:
+        f.write('<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">'
+                '<meta http-equiv="refresh" content="0; url=history.html">'
+                '<title>考公推送</title><style>body{font-family:sans-serif;background:#eef5fc;'
+                'display:flex;align-items:center;justify-content:center;height:100vh;margin:0;color:#1a63b8;}'
+                'a{color:#1a63b8;}</style></head>'
+                '<body><div>正在跳转到 <a href="history.html">历史记录页面</a> …</div></body></html>')
+    print(f"[generate_html] 已生成 {HTML_FILE} 与 index.html（今日新增 {len(daily)}，累计 {len(jobs)}）", flush=True)

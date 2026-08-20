@@ -7,6 +7,9 @@ from config import (
     STRONG_MAJOR_KEYWORDS, GENERAL_MAJOR_KEYWORDS,
     VALID_WINDOW_DAYS, EXPIRE_SOON_DAYS,
     GANSUN, SHAANXI,
+    CIVIL_SERVER_SOURCES, CIVIL_SERVER_KEYWORDS,
+    PUBLIC_INST_SOURCES, PUBLIC_INST_KEYWORDS,
+    PUBLIC_INST_UNIT_KEYWORDS, NON_ESTABLISHMENT_KEYWORDS,
 )
 
 PROVINCES = ["北京", "天津", "上海", "重庆", "河北", "山西", "辽宁", "吉林",
@@ -203,6 +206,28 @@ def build_match_explanation(job):
     return lines
 
 
+def infer_types(title, unit="", source="", link="", is_history=False):
+    """判定岗位类型档位：1=公务员 2=事业编制 3=其他
+    判定顺序：非编词 → 公务员 → 事业编 → 其他（source isinstance 启发）"""
+    text = f"{title} {unit}"
+    for kw in NON_ESTABLISHMENT_KEYWORDS:
+        if kw in text:
+            return 3, "其他"
+    if source in CIVIL_SERVER_SOURCES:
+        return 1, "公务员"
+    for kw in CIVIL_SERVER_KEYWORDS:
+        if kw in title:
+            return 1, "公务员"
+    if source in PUBLIC_INST_SOURCES:
+        return 2, "事业编制"
+    for kw in PUBLIC_INST_KEYWORDS:
+        if kw in text:
+            return 2, "事业编制"
+    if any(k in text for k in PUBLIC_INST_UNIT_KEYWORDS):
+        return 2, "事业编制"
+    return 3, "其他"
+
+
 def enrich(job, today):
     if not job.province or not job.city:
         p, c = parse_location((job.location or "") + (job.title or "") + (job.unit or ""))
@@ -232,3 +257,5 @@ def enrich(job, today):
     status, days = check_validity(job.publish_date, job.deadline, today)
     job.status = status
     job.days_left = days
+
+    job.tier, job.job_type = infer_types(job.title, job.unit, job.source, job.link)
