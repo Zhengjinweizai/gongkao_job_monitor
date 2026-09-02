@@ -1,9 +1,11 @@
 """Server酱（Turbo）微信推送 — 支持多账号（多微信号）"""
+import json
 import os
 
 import requests
 
 API_URL = "https://sctapi.ftqq.com/{sendkey}.send"
+PUSH_PAYLOAD = os.getenv("PUSH_PAYLOAD_FILE", "push_payload.json")
 
 
 def get_keys():
@@ -23,7 +25,7 @@ def get_keys():
     return uniq
 
 
-def push(title, desp):
+def _send(title, desp):
     keys = get_keys()
     if not keys:
         print("[notifier] 未配置 SERVER_CHAN_KEY，跳过微信推送（仅本地记录）", flush=True)
@@ -39,6 +41,31 @@ def push(title, desp):
             ok = False
             print(f"[notifier] 账号{idx} 推送失败: {e}", flush=True)
     return ok
+
+
+def append_payload(track, title, desp):
+    """批量模式：把一段内容写入 push_payload.json，由 push_batch.py 合并发送"""
+    entries = []
+    if os.path.exists(PUSH_PAYLOAD):
+        try:
+            with open(PUSH_PAYLOAD, "r", encoding="utf-8") as f:
+                entries = json.load(f)
+            if not isinstance(entries, list):
+                entries = []
+        except Exception:
+            entries = []
+    entries.append({"track": track, "title": title, "desp": desp})
+    with open(PUSH_PAYLOAD, "w", encoding="utf-8") as f:
+        json.dump(entries, f, ensure_ascii=False, indent=2)
+    print(f"[notifier] 批量模式：已暂存「{track}」推送内容（累计 {len(entries)} 段）", flush=True)
+    return True
+
+
+def push(title, desp):
+    if os.getenv("PUSH_BATCH") == "1":
+        track = "国企央企" if "🏭" in title else ("考公" if "📢" in title or "📭" in title else "其他")
+        return append_payload(track, title, desp)
+    return _send(title, desp)
 
 
 def stars(score):
