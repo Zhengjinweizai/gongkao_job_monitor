@@ -3,16 +3,13 @@ import datetime
 import html as html_mod
 import os
 
-from config import HTML_FILE, PAGES_URL, GRADUATE_DATE
-
-
-def stars(score):
-    score = max(0, min(10, int(score)))
-    return "⭐" * max(1, round(score / 2))
+from config import GRADUATE_DATE, HTML_FILE
+from utils import atomic_write_text, log, safe_url, stars, to_int
 
 
 def esc(s):
-    return html_mod.escape(str(s or ""))
+    # 注意：不能用 `s or ""`，否则 score/days_left 的 0 会被吞掉
+    return "" if s is None else html_mod.escape(str(s))
 
 
 TIER_BADGE = {1: '<span class="t-tier t1">公务员</span>',
@@ -28,12 +25,25 @@ def status_badge(status):
     return '<span class="badge b-green">可报</span>'
 
 
+def _tier(job):
+    tier = to_int(job.get("tier"), 3)
+    return tier if tier in TIER_BADGE else 3
+
+
 def sort_key(job):
     rank = {"expiring": 0, "active": 1, "expired": 2}
-    return (int(job.get("tier", 3)),
+    return (_tier(job),
             rank.get(job.get("status"), 1),
-            -int(job.get("score", 0)),
-            int(job.get("days_left", 999)))
+            -to_int(job.get("score"), 0),
+            to_int(job.get("days_left"), 999))
+
+
+def _link_html(url, text, css_class=""):
+    safe = safe_url(url)
+    cls = f' class="{css_class}"' if css_class else ""
+    if not safe:
+        return f'<span{cls}>{esc(text)}</span>'
+    return f'<a href="{esc(safe)}"{cls} target="_blank" rel="noopener noreferrer">{esc(text)}</a>'
 
 
 def render_detail(j):
@@ -74,35 +84,34 @@ def render_detail(j):
     exam = f"考试科目：{esc(subj)}；" if subj else "考试科目：公告未注明；"
     blocks.append(f'<div class="d-block"><h4>📝 考试科目 / 备考建议</h4><p class="d-text">{exam}备考建议：{esc(j.get("exam_advice") or "行测+申论")}</p></div>')
 
-    atts = j.get("attachments") or []
+    atts = [a for a in (j.get("attachments") or []) if safe_url(a)][:5]
     if atts:
-        att_html = "".join(f'<a href="{esc(a)}" target="_blank" rel="noopener">附件{i}</a> ' for i, a in enumerate(atts[:5], 1))
+        att_html = "".join(_link_html(a, f"附件{i}") + " " for i, a in enumerate(atts, 1))
     else:
         att_html = "无"
-    blocks.append(f'<div class="d-block"><h4>📎 岗位表附件 / 公告原文</h4><p class="d-text">附件：{att_html}<br><a href="{esc(j.get("link"))}" target="_blank" rel="noopener">点击查看公告原文</a></p></div>')
+    blocks.append(f'<div class="d-block"><h4>📎 岗位表附件 / 公告原文</h4><p class="d-text">附件：{att_html}<br>{_link_html(j.get("link"), "点击查看公告原文")}</p></div>')
     return "".join(blocks)
 
 
 def render_row(j):
+    tier = _tier(j)
+    status = j.get("status") if j.get("status") in ("active", "expiring", "expired") else "active"
     deadline = j.get("deadline") or "详见公告"
-    if j.get("status") == "active" and not j.get("deadline"):
-        deadline = f"约 {j.get('days_left', '')} 天后推定失效"
-    days = j.get("days_left", "")
-    if j.get("status") == "expired":
-        days = "已截止"
-    else:
-        days = f"{days} 天"
+    if status == "active" and not j.get("deadline"):
+        deadline = f"约 {to_int(j.get('days_left'), 0)} 天后推定失效"
+    days = to_int(j.get("days_left"), 0)
+    days = "已截止" if status == "expired" else f"{days} 天"
     summary = f"""\
-      <tr class="s-row t-tier-{esc(j.get('tier', 3))} {esc(j.get('status', 'active'))}">
+      <tr class="s-row t-tier-{tier} {esc(status)}">
         <td class="score"><div class="sc-num">{esc(j.get('score'))}</div><div class="sc-star">{stars(j.get('score', 0))}</div><div class="sc-sug">{esc(j.get('suggestion'))}</div></td>
-        <td>{TIER_BADGE.get(int(j.get('tier', 3)), TIER_BADGE[3])}</td>
-        <td class="t-title"><a href="{esc(j.get('link'))}" target="_blank" rel="noopener">{esc(j.get('title'))}</a></td>
-        <td>{esc(j.get('unit') or '—')}</td>
+        <td>{TIER_BADGE[tier]}</td>
+        <td class="t-title">{_link_html(j.get('link'), j.get('title'))}</td>
+        <td>{esc(j.get('unit') or '—')}{('<br><span class="tag-p">' + esc(j.get('category')) + '</span>') if j.get('category') else ''}</td>
         <td>{esc(j.get('location') or (j.get('city') or '—'))}<br><span class="tag-p">{esc(j.get('region_label'))}</span></td>
         <td>{esc(j.get('education') or '详见公告')}</td>
         <td>{esc(j.get('major_req') or '—')}</td>
         <td>{esc(deadline)}<br><span class="days">{esc(days)}</span></td>
-        <td>{status_badge(j.get('status'))}</td>
+        <td>{status_badge(status)}</td>
         <td class="c-detail"><button class="tgl" onclick="tg(this)">详情 ▾</button></td>
       </tr>"""
     detail = f"""\
@@ -112,11 +121,12 @@ def render_row(j):
     return summary + detail
 
 
-def render(history, today):
-    jobs = history["jobs"]
+def render(history, today, pages_url=None, out_path=None):
+    jobs = [j for j in (history.get("jobs") or []) if isinstance(j, dict)]
+    today = today.isoformat() if isinstance(today, datetime.date) else str(today or "")
     active = sum(1 for j in jobs if j.get("status") != "expired")
-    t1 = sum(1 for j in jobs if int(j.get("tier", 3)) == 1)
-    t2 = sum(1 for j in jobs if int(j.get("tier", 3)) == 2)
+    t1 = sum(1 for j in jobs if _tier(j) == 1)
+    t2 = sum(1 for j in jobs if _tier(j) == 2)
 
     daily = sorted([j for j in jobs if j.get("fetched_at") == today], key=sort_key)
     cumulative = sorted(jobs, key=sort_key)
@@ -130,16 +140,18 @@ def render(history, today):
 
     cumulative_rows = "".join(render_row(j) for j in cumulative)
 
-    pages = PAGES_URL
-    pages_note = f'<a href="{esc(pages)}" target="_blank" rel="noopener">{esc(pages)}</a>' if pages \
-        else "未配置 PAGES_URL，请在 GitHub Actions 运行结果 → Artifacts 中下载 history.html 查看"
+    pages = pages_url if pages_url is not None else os.getenv("PAGES_URL", "").strip()
+    pages_note = (f'<a href="{esc(safe_url(pages))}" target="_blank" rel="noopener noreferrer">{esc(pages)}</a>'
+                  if safe_url(pages) else
+                  "未配置 PAGES_URL，请在 GitHub Actions 运行结果 → Artifacts 中下载 history.html 查看")
 
-    today_disp = today if today else datetime.date.today().isoformat()
+    today_disp = today or datetime.date.today().isoformat()
     html_doc = f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
 <title>考公岗位智能匹配汇总（生物医学硕士）</title>
 <style>
   :root{{--blue-900:#0d3a6e;--blue-600:#1a63b8;--blue-500:#2e7fd0;--blue-100:#e7f1fb;--ink:#243447;--muted:#5b6b7f;--line:#dce6f2;}}
@@ -267,15 +279,15 @@ function tg(btn){{
 </body>
 </html>
 """
-    os.makedirs(os.path.dirname(HTML_FILE), exist_ok=True)
-    with open(HTML_FILE, "w", encoding="utf-8") as f:
-        f.write(html_doc)
-    index_path = os.path.join(os.path.dirname(HTML_FILE), "index.html")
-    with open(index_path, "w", encoding="utf-8") as f:
-        f.write('<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">'
-                '<meta http-equiv="refresh" content="0; url=history.html">'
-                '<title>考公推送</title><style>body{font-family:sans-serif;background:#eef5fc;'
-                'display:flex;align-items:center;justify-content:center;height:100vh;margin:0;color:#1a63b8;}'
-                'a{color:#1a63b8;}</style></head>'
-                '<body><div>正在跳转到 <a href="history.html">历史记录页面</a> …</div></body></html>')
-    print(f"[generate_html] 已生成 {HTML_FILE} 与 index.html（今日新增 {len(daily)}，累计 {len(jobs)}）", flush=True)
+    out_path = out_path or HTML_FILE
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    atomic_write_text(out_path, html_doc)
+    index_path = os.path.join(os.path.dirname(out_path), "index.html")
+    atomic_write_text(index_path,
+                      '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">'
+                      '<meta http-equiv="refresh" content="0; url=history.html">'
+                      '<title>考公推送</title><style>body{font-family:sans-serif;background:#eef5fc;'
+                      'display:flex;align-items:center;justify-content:center;height:100vh;margin:0;color:#1a63b8;}'
+                      'a{color:#1a63b8;}</style></head>'
+                      '<body><div>正在跳转到 <a href="history.html">历史记录页面</a> …</div></body></html>')
+    log(f"[generate_html] 已生成 {out_path} 与 index.html（今日新增 {len(daily)}，累计 {len(jobs)}）")

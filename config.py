@@ -26,11 +26,22 @@ GENERAL_MAJOR_KEYWORDS = [
 # ============ 时效参数 ============
 VALID_WINDOW_DAYS = 30      # 无明确截止日期的公告，默认按发布日期+30天推定有效
 EXPIRE_SOON_DAYS = 3        # 截止前 3 天标记"即将截止"
-EXPIRE_PURGE_DAYS = 1       # 过期超过该天数后从历史记录自动删除（宽限期，防止误删截止当天仍可报岗位）
+EXPIRE_PURGE_DAYS = 1       # 过期超过该天数后从历史记录自动删除（宽限期）
 GRADUATE_DATE = "2027-06"   # 你的毕业时间（应届生身份时效锚点）
+TIMEZONE = os.getenv("TIMEZONE", "Asia/Shanghai")   # “今日”的时区锚点
 
 # ============ 推送阈值 ============
 PUSH_MIN_SCORE = 2          # 只推送匹配度 >= 2 的当天新岗位
+
+# ============ 运行预算 ============
+MAX_DETAIL_FETCH = 30       # 每次运行最多尝试拉取详情条数（含失败）
+MAX_ATTACHMENT_JOBS = 10    # 每次运行最多解析附件的岗位数
+MAX_ATTACHMENT_PARSE = 2    # 每个岗位最多解析的岗位表附件数
+MAX_ATTACHMENT_BYTES = 15 * 1024 * 1024
+RUN_TIME_BUDGET_SECONDS = 20 * 60   # 富化阶段墙钟预算，留出提交/部署时间
+HTTP_TIMEOUT = 25
+DETAIL_TIMEOUT = 15
+ATTACHMENT_TIMEOUT = 40
 
 # ============ 岗位类型分档（公务员 > 事业编制 > 其他）============
 # 用于推送与历史记录的排序置顶（tier: 1=公务员 2=事业编制 3=其他）
@@ -59,11 +70,7 @@ SOURCES = {
 }
 
 # 附件解析开关
-PARSE_ATTACHMENT = True     # 对 Excel/PDF 附件尝试提取文字（pandas / pypdf）
-
-# ============ 环境变量（GitHub Secrets / Vars 注入）============
-SERVER_CHAN_KEY = os.getenv("SERVER_CHAN_KEY", "")
-PAGES_URL = os.getenv("PAGES_URL", "")
+PARSE_ATTACHMENT = True     # 对 Excel/PDF 附件尝试提取文字（openpyxl / xlrd / pypdf）
 
 # ============ 文件路径 ============
 HISTORY_FILE = "history.json"

@@ -1,8 +1,22 @@
 # 生成物（不提交仓库，由 GitHub Pages 部署使用）
 site/
 
+# 历史文件备份 / 损坏快照
+history.json.bak
+history.json.corrupt-*
+history.json.pre-migration-*
+
 # Python
 __pycache__/
 *.py[cod]
 .venv/
 venv/
+
+# 本地环境与工具缓存
+.env
+.env.*
+*.log
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/

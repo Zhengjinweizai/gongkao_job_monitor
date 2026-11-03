@@ -1,0 +1,40 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q --strict-markers"
+markers = [
+    "live: hits real websites; run manually with RUN_LIVE=1",
+]
+
+[tool.coverage.run]
+branch = true
+source = [
+    "config",
+    "filters",
+    "storage",
+    "notifier",
+    "main",
+    "generate_html",
+    "parsers",
+    "details",
+    "http_client",
+    "models",
+    "utils",
+]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+fail_under = 85
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501"]

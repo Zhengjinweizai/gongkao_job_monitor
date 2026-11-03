@@ -2,73 +2,125 @@ name: gongkao-job-monitor
 
 on:
   schedule:
-    - cron: "0 16 * * *"
+    - cron: "0 16 * * *"   # 00:00 Asia/Shanghai（北京时间）
   workflow_dispatch:
 
 permissions:
-  contents: write
-  pages: write
-  id-token: write
+  contents: read
 
 concurrency:
-  group: "pages"
-  cancel-in-progress: true
+  group: gongkao-monitor
+  cancel-in-progress: false
 
 jobs:
   monitor:
+    # 只在 main 上运行：workflow_dispatch 可以选择任意分支，避免把分支代码/历史推到 main
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      contents: write
+    env:
+      TZ: Asia/Shanghai
+      PYTHONUNBUFFERED: "1"
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          python -m playwright install chromium || true
+        run: python -m pip install -r requirements.txt
+
+      - name: Install Playwright Chromium (optional)
+        continue-on-error: true
+        run: python -m playwright install --with-deps chromium
 
       - name: Run monitor
         env:
           SERVER_CHAN_KEY: ${{ secrets.SERVER_CHAN_KEY }}
           SERVER_CHAN_KEY_2: ${{ secrets.SERVER_CHAN_KEY_2 }}
+          SERVER_CHAN_KEY_3: ${{ secrets.SERVER_CHAN_KEY_3 }}
           PAGES_URL: ${{ vars.PAGES_URL }}
-          FETCH_PROXY: ${{ vars.FETCH_PROXY }}
-          READER_PROXY: ${{ vars.READER_PROXY }}
+          FETCH_PROXY: ${{ secrets.FETCH_PROXY || vars.FETCH_PROXY }}
+          READER_PROXY: ${{ secrets.READER_PROXY || vars.READER_PROXY }}
         run: python main.py
 
       - name: Commit history back to repo
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add history.json
-          git diff --cached --quiet || git commit -m "chore: update history.json [skip ci]"
-          git push
+          if git diff --cached --quiet; then
+            echo "history.json 无变化，跳过提交"
+            exit 0
+          fi
+          git commit -m "chore: update history.json [skip ci]"
+          # 只在单条 git 命令上附带认证头，避免 token 写入 .git/config
+          AUTH=$(printf 'x-access-token:%s' "${GITHUB_TOKEN}" | base64 | tr -d '\n')
+          for attempt in 1 2 3; do
+            if git -c http.extraheader="AUTHORIZATION: basic ${AUTH}" push origin HEAD:main; then
+              exit 0
+            fi
+            echo "push 失败，拉取远端后重试（第 ${attempt} 次）"
+            if ! git -c http.extraheader="AUTHORIZATION: basic ${AUTH}" pull --rebase --autostash origin main; then
+              git rebase --abort || true
+              echo "::error::history.json 与远端冲突，请人工处理"
+              exit 1
+            fi
+            sleep $((attempt * 3))
+          done
+          echo "::error::history.json 推送失败"
+          exit 1
 
-      - name: Upload history artifact
-        uses: actions/upload-artifact@v4
+      - name: Upload history site artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: history-page
-          path: site/history.html
-          if-no-files-found: warn
+          name: history-site
+          path: site/
+          if-no-files-found: error
+          overwrite: true
+
+  deploy:
+    needs: monitor
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+      - name: Download history site
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: history-site
+          path: site
 
       - name: Configure Pages
         id: pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: site
 
       - name: Deploy Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
