@@ -16,4 +16,4 @@ soupsieve==2.10
 typing-extensions==4.16.0
 et-xmlfile==2.0.0
 greenlet==3.5.6
-pyee==13.0.1
+pyee==16.0.1
