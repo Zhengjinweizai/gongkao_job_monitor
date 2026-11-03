@@ -3,13 +3,21 @@ import datetime
 import re
 
 from config import (
-    REGION_HIGH, REGION_MED, REGION_LOW,
-    STRONG_MAJOR_KEYWORDS, GENERAL_MAJOR_KEYWORDS,
-    VALID_WINDOW_DAYS, EXPIRE_SOON_DAYS,
-    GANSUN, SHAANXI,
-    CIVIL_SERVER_SOURCES, CIVIL_SERVER_KEYWORDS,
-    PUBLIC_INST_SOURCES, PUBLIC_INST_KEYWORDS,
-    PUBLIC_INST_UNIT_KEYWORDS, NON_ESTABLISHMENT_KEYWORDS,
+    CIVIL_SERVER_KEYWORDS,
+    CIVIL_SERVER_SOURCES,
+    EXPIRE_SOON_DAYS,
+    GANSUN,
+    GENERAL_MAJOR_KEYWORDS,
+    NON_ESTABLISHMENT_KEYWORDS,
+    PUBLIC_INST_KEYWORDS,
+    PUBLIC_INST_SOURCES,
+    PUBLIC_INST_UNIT_KEYWORDS,
+    REGION_HIGH,
+    REGION_LOW,
+    REGION_MED,
+    SHAANXI,
+    STRONG_MAJOR_KEYWORDS,
+    VALID_WINDOW_DAYS,
 )
 
 PROVINCES = ["北京", "天津", "上海", "重庆", "河北", "山西", "辽宁", "吉林",
@@ -42,31 +50,45 @@ CITY_MAP = {
              "黄冈", "咸宁", "随州"],
 }
 
+DATE_RE = re.compile(r"(\d{4})\s*[年./\-]\s*(\d{1,2})\s*[月./\-]\s*(\d{1,2})\s*[日号]?")
+
+
+def _norm_province(province):
+    province = (province or "").strip()
+    return province[:-1] if province.endswith("省") and len(province) > 2 else province
+
+
+def _norm_city(city):
+    city = (city or "").strip()
+    return city[:-1] if city.endswith("市") and len(city) > 1 else city
+
+
+def _earliest(text, candidates):
+    best = None
+    for candidate in candidates:
+        idx = text.find(candidate)
+        if idx >= 0 and (best is None or idx < best[0]):
+            best = (idx, candidate)
+    return best[1] if best else ""
+
 
 def parse_location(text):
     text = text or ""
-    province, city = "", ""
-    for p in PROVINCES:
-        if p in text:
-            province = p
-            break
+    province = _earliest(text, PROVINCES)
+    city = ""
     if province in CITY_MAP:
-        for c in CITY_MAP[province]:
-            if c in text:
-                city = c
-                break
+        city = _earliest(text, CITY_MAP[province])
     if not province and not city:
         for p, cities in CITY_MAP.items():
-            for c in cities:
-                if c in text:
-                    province, city = p, c
-                    break
-            if province:
+            city = _earliest(text, cities)
+            if city:
+                province = p
                 break
     return province, city
 
 
 def region_info(province, city):
+    province, city = _norm_province(province), _norm_city(city)
     if province == GANSUN and city == "天水":
         return REGION_HIGH, "高（天水本地）"
     if province == SHAANXI and city == "西安":
@@ -92,24 +114,20 @@ def major_score(text):
 def parse_date(s):
     if not s:
         return None
-    s = str(s).strip()
-    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y年%m月%d日"):
-        try:
-            return datetime.datetime.strptime(s, fmt).date()
-        except ValueError:
-            pass
-    m = re.search(r"(\d{4})[年/\-.](\d{1,2})[月/\-.](\d{1,2})", s)
-    if m:
-        try:
-            return datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
-        except ValueError:
-            pass
-    return None
+    text = re.sub(r"\s+", "", str(s).strip())
+    m = DATE_RE.search(text)
+    if not m:
+        return None
+    try:
+        return datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except ValueError:
+        return None
 
 
-def check_validity(publish_date, deadline, today):
+def check_validity(publish_date, deadline, today, fallback_date=""):
+    """判断时效：明确截止日期优先；否则用发布日期，再否则用首次发现日期。"""
     if isinstance(today, str):
-        today = datetime.date.fromisoformat(today)
+        today = parse_date(today) or datetime.date.today()
     dl = parse_date(deadline)
     if dl:
         days = (dl - today).days
@@ -118,7 +136,7 @@ def check_validity(publish_date, deadline, today):
         if days <= EXPIRE_SOON_DAYS:
             return "expiring", days
         return "active", days
-    pd = parse_date(publish_date)
+    pd = parse_date(publish_date) or parse_date(fallback_date)
     if pd:
         expiry = pd + datetime.timedelta(days=VALID_WINDOW_DAYS)
         days = (expiry - today).days
@@ -128,7 +146,7 @@ def check_validity(publish_date, deadline, today):
     return "active", VALID_WINDOW_DAYS
 
 
-def build_match_points(job, region_label, major_hits, major_kind):
+def build_match_points(job, major_hits, major_kind):
     parts = []
     if major_kind == "strong":
         parts.append(f"专业强匹配（{'/'.join(major_hits[:3])}）")
@@ -145,7 +163,8 @@ def build_match_points(job, region_label, major_hits, major_kind):
 
 
 def get_exam_advice(job):
-    text = (job.title or "") + (job.unit or "") + (job.major_req or "")
+    # 招聘单位/栏目名不参与专业判断，避免“医学人才”栏目污染所有岗位
+    text = (job.title or "") + (job.major_req or "")
     if any(k in text for k in ("卫健委", "医院", "疾控", "卫生", "医疗", "医学", "卫生院", "保健院")):
         return "职测（E类）+ 综合应用能力（E类·医学基础知识）"
     if any(k in text for k in ("公务员", "选调", "省考", "国考")) or job.source in ("国家公务员局", "甘肃组工网"):
@@ -183,12 +202,12 @@ def suggestion(score):
 
 def build_match_explanation(job):
     lines = []
-    if job.region_score == 3:
-        lines.append(f"地域：{job.location or job.city or '天水/西安'} → +3（天水/西安本地优先）")
-    elif job.region_score == 1:
-        lines.append(f"地域：{job.province}（{job.city or '省内'}）→ +1（省内岗位）")
+    if job.region_score == REGION_HIGH:
+        lines.append(f"地域：{job.location or job.city or '天水/西安'} → +{REGION_HIGH}（天水/西安本地优先）")
+    elif job.region_score == REGION_MED:
+        lines.append(f"地域：{job.province}（{job.city or '省内'}）→ +{REGION_MED}（省内岗位）")
     else:
-        lines.append(f"地域：{job.province or '全国'}{job.city or ''} → +0（外省，专业匹配仍推荐）")
+        lines.append(f"地域：{job.province or '全国'}{job.city or ''} → +{REGION_LOW}（外省，专业匹配仍推荐）")
     if job.major_kind == "strong":
         lines.append(f"专业：命中『{'/'.join(job.major_hits[:3])}』→ +5（生物医学类强匹配）")
     elif job.major_kind == "general":
@@ -206,17 +225,17 @@ def build_match_explanation(job):
     return lines
 
 
-def infer_types(title, unit="", source="", link="", is_history=False):
+def infer_types(title, unit="", source=""):
     """判定岗位类型档位：1=公务员 2=事业编制 3=其他
-    判定顺序：非编词 → 公务员 → 事业编 → 其他（source isinstance 启发）"""
-    text = f"{title} {unit}"
+    判定顺序：非编词 → 公务员 → 事业编 → 其他（source 启发）"""
+    text = f"{title or ''} {unit or ''}"
     for kw in NON_ESTABLISHMENT_KEYWORDS:
         if kw in text:
             return 3, "其他"
     if source in CIVIL_SERVER_SOURCES:
         return 1, "公务员"
     for kw in CIVIL_SERVER_KEYWORDS:
-        if kw in title:
+        if kw in (title or ""):
             return 1, "公务员"
     if source in PUBLIC_INST_SOURCES:
         return 2, "事业编制"
@@ -228,7 +247,10 @@ def infer_types(title, unit="", source="", link="", is_history=False):
     return 3, "其他"
 
 
-def enrich(job, today):
+def enrich(job, today, fallback_date=""):
+    if isinstance(today, str):
+        today = parse_date(today) or datetime.date.today()
+
     if not job.province or not job.city:
         p, c = parse_location((job.location or "") + (job.title or "") + (job.unit or ""))
         if not job.province:
@@ -236,10 +258,18 @@ def enrich(job, today):
         if not job.city:
             job.city = c
         if not job.location:
-            job.location = f"{p}{c}".strip()
+            job.location = f"{job.province}{job.city}".strip()
+    job.province = _norm_province(job.province)
+    job.city = _norm_city(job.city)
+
+    # 标题里的日期可能是考试日期而非发布日期；不允许未来日期把岗位“续命”
+    publish = parse_date(job.publish_date)
+    if publish and publish > today:
+        job.publish_date = today.isoformat()
 
     region_score, region_label = region_info(job.province, job.city)
-    ms, hits, kind = major_score((job.title or "") + (job.unit or "") + (job.major_req or ""))
+    # 只对标题+岗位专业要求打分；unit/category 是展示字段，不参与专业匹配
+    ms, hits, kind = major_score((job.title or "") + (job.major_req or ""))
 
     job.region_score = region_score
     job.region_label = region_label
@@ -248,14 +278,14 @@ def enrich(job, today):
     job.major_hits = hits
     job.score = region_score + ms
 
-    job.match_points = build_match_points(job, region_label, hits, kind)
+    job.match_points = build_match_points(job, hits, kind)
     job.exam_advice = get_exam_advice(job)
     job.salary_ref = get_salary_ref(job)
     job.match_explanation = build_match_explanation(job)
     job.suggestion = suggestion(job.score)
 
-    status, days = check_validity(job.publish_date, job.deadline, today)
+    status, days = check_validity(job.publish_date, job.deadline, today, fallback_date)
     job.status = status
     job.days_left = days
 
-    job.tier, job.job_type = infer_types(job.title, job.unit, job.source, job.link)
+    job.tier, job.job_type = infer_types(job.title, job.unit, job.source)
