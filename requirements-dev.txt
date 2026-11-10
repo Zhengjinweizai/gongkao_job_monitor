@@ -3,7 +3,7 @@
 setuptools==84.2.1
 pytest==9.2.0
 pytest-cov==7.1.0
-coverage==7.17.1
-ruff==0.17.3
+coverage==7.17.2
+ruff==0.17.4
 pip-audit==2.10.1
 PyYAML==6.0.3
